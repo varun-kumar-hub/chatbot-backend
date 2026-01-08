@@ -1,5 +1,4 @@
 import os
-import requests
 import json
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +25,20 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 app = FastAPI(redirect_slashes=False)
 
-# ... (CORS logic remains the same)
+# Enable CORS
+# IMPORTANT: Do not use "*" with allow_credentials=True.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://chatbot139.vercel.app", 
+        "https://chatbot-frontend-varun-kumar-hubs-projects.vercel.app", # Potential preview URL
+        "http://localhost:5173", 
+        "http://localhost:3000"
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ... (Helpers match)
 
