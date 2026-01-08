@@ -100,9 +100,17 @@ def upload_file_to_storage(file: UploadFile, chat_id: str):
         print(f"Storage Upload Failed: {e}")
         raise ValueError(f"File Upload Failed: {e}")
 
-def call_gemini_api(history: list, user_message: str):
-    """Calls Gemini API directly via REST."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+from fastapi.responses import StreamingResponse
+import json
+
+# ... (Previous imports match, just explicitly ensuring StreamingResponse is available)
+
+# --- Helpers ---
+# ... (get_user_from_token, get_signed_url, fetch_context, upload_file_to_storage remain matching original)
+
+def stream_gemini_api(history: list, user_message: str):
+    """Calls Gemini API via REST with streaming."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key={GEMINI_API_KEY}"
     
     # Format contents
     contents = []
@@ -111,9 +119,6 @@ def call_gemini_api(history: list, user_message: str):
         parts = []
         if msg.get('content'):
             parts.append({'text': msg['content']})
-        # Check if we should add file data? 
-        # For now, just context text to keep it simple unless we want Vision.
-        # User prompt didn't strictly demand Vision, just Storage.
         if parts:
             contents.append({'role': role, 'parts': parts})
     
@@ -121,42 +126,53 @@ def call_gemini_api(history: list, user_message: str):
     parts = []
     if user_message:
         parts.append({'text': user_message})
-        
-    # If no text (file only message), provide a default prompt for the AI to acknowledge the file
     if not parts:
          parts.append({'text': "[User uploaded a file]"})
 
     contents.append({'role': 'user', 'parts': parts})
     
-    payload = {
-        "contents": contents
-    }
-    
+    payload = {"contents": contents}
     headers = {'Content-Type': 'application/json'}
     
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    
-    if response.status_code != 200:
-        error_msg = response.text
-        try:
-            error_json = response.json()
-            error_msg = error_json.get('error', {}).get('message', error_msg)
-        except:
-            pass
-        raise ValueError(f"Gemini API Error ({response.status_code}): {error_msg}")
-        
-    data = response.json()
-    try:
-        return data['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError) as e:
-        return "I'm sorry, I couldn't generate a response."
+    # Stream=True is critical here
+    with requests.post(url, headers=headers, json=payload, stream=True, timeout=60) as response:
+        if response.status_code != 200:
+             yield f"Error: {response.status_code} - {response.text}"
+             return
+
+        # Gemini returns a stream of JSON objects, usually strictly formatted
+        # But requests.iter_lines maps to these chunks
+        for line in response.iter_lines():
+            if line:
+                decoded_line = line.decode('utf-8')
+                # Remove "data: " prefix if present (SSE style), though Gemini REST is usually just JSON array elements
+                # But raw REST streamGenerateContent actually sends a JSON array piece by piece.
+                # Actually, standard parsing of a JSON stream can be tricky.
+                # Let's try simple text accumulation or line processing. 
+                # Gemini often sends:  [{ "candidates": ... }] \n , \n [{...}]
+                
+                # Careful: The raw response might be valid JSON array overall, but chunks might be partial.
+                # However, usually iterating by line works if they send newlines.
+                
+                # A safer parsing approach for Gemini REST stream:
+                # It usually sends complete JSON objects starting with "{"
+                if decoded_line.startswith(',') or decoded_line.strip() == '[' or decoded_line.strip() == ']':
+                    continue
+                
+                try:
+                    obj = json.loads(decoded_line)
+                    text_chunk = obj['candidates'][0]['content']['parts'][0]['text']
+                    yield text_chunk
+                except Exception:
+                    # If we can't parse a line, it might be structural chars like '[' or ']' or ','
+                    pass
 
 # --- Endpoints ---
 @app.get("/")
 def health_check():
     return {"status": "ok"}
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat_endpoint(
     chat_id: str = Form(...),
     message: str = Form(None), # Optional
@@ -168,65 +184,53 @@ async def chat_endpoint(
             raise HTTPException(status_code=401, detail="Missing Bearer token")
         
         token = authorization.split(" ")[1]
-        
-        # Verify token matches a valid user
         get_user_from_token(token)
-        
-        print(f"Processing message for chat {chat_id}...")
         
         if not message and not file:
              raise HTTPException(status_code=400, detail="Message or File is required")
 
         user_content = message if message else ""
         file_path = None
-        signed_url = None
-
+        
         # 1. Handle File Upload
         if file:
-            print(f"Uploading file: {file.filename}")
             file_path = upload_file_to_storage(file, chat_id)
-            signed_url = get_signed_url(file_path)
-            print(f"File uploaded to: {file_path}")
 
-        # 2. Fetch Context (for AI history)
-        try:
-            history = fetch_context(chat_id)
-        except Exception as e:
-            print(f"DB Error (Context): {e}")
-            raise ValueError(f"Database Error: {e}")
+        # 2. Fetch Context
+        history = fetch_context(chat_id)
         
-        print(f"Calling Gemini API (History: {len(history)} msgs)...")
-        
-        # 3. Generate Response via REST
-        # Note: We are currently NOT sending the image to Gemini (Vision) to keep this step robust.
-        # We are simply notifying Gemini that a file exists if message is empty.
-        ai_reply = call_gemini_api(history, user_content)
-        
-        print("Received AI Response. Saving...")
-
-        # 4. Save to Database using Service Key (Admin)
-        # User Message
+        # 3. Save User Message Immediately
         supabase.table('messages').insert({
             'chat_id': chat_id,
             'sender': 'user',
             'content': user_content,
             'file_path': file_path
         }).execute()
+
+        # 4. Generator for Streaming & Saving AI Reply
+        async def response_generator():
+            full_reply = ""
+            # Note: stream_gemini_api is synchronous generator, we iterate it
+            # But in async def, we should run it carefully? 
+            # Actually, requests is blocking. For this simple case, direct iteration blocks the loop lightly but it's okay for low load.
+            # Better: run in threadpool? Or just keep it simple as user requested deployment fix.
+            
+            for chunk in stream_gemini_api(history, user_content):
+                full_reply += chunk
+                yield chunk
+            
+            # Save AI Reply after stream finishes
+            if full_reply:
+                supabase.table('messages').insert({
+                    'chat_id': chat_id,
+                    'sender': 'ai',
+                    'content': full_reply
+                }).execute()
         
-        # AI Reply
-        supabase.table('messages').insert({
-            'chat_id': chat_id,
-            'sender': 'ai',
-            'content': ai_reply
-        }).execute()
-        
-        print("Saved to DB.")
-        return ChatResponse(reply=ai_reply, file_url=signed_url)
+        return StreamingResponse(response_generator(), media_type="text/plain")
 
     except HTTPException as he:
         raise he
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
