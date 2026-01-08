@@ -110,7 +110,8 @@ from fastapi.responses import StreamingResponse
 
 async def stream_gemini_api(history: list, user_message: str):
     """Calls Gemini API via REST with streaming (Async)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key={GEMINI_API_KEY}"
+    # Fix: Use stable model gemini-1.5-flash
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key={GEMINI_API_KEY}"
     
     contents = []
     for msg in history:
