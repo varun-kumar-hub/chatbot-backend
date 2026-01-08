@@ -140,18 +140,29 @@ async def stream_gemini_api(history: list, user_message: str):
                 yield f"Error: {response.status} - {text}"
                 return
             
-            # yield "[Debug: Stream connected] " 
+            buffer = ""
+            decoder = json.JSONDecoder()
             
-            async for line in response.content:
-                if line:
-                    decoded_line = line.decode('utf-8').strip()
-                    if not decoded_line: continue
+            async for chunk in response.content.iter_any():
+                if not chunk: continue
+                buffer += chunk.decode('utf-8', errors='replace')
+                
+                while True:
+                    # Strip irrelevant characters between objects (comma, brackets, whitespace)
+                    buffer = buffer.lstrip()
+                    if not buffer:
+                        break
                     
-                    if decoded_line.startswith(',') or decoded_line == '[' or decoded_line == ']':
+                    if buffer.startswith(('[', ',', ']')):
+                        buffer = buffer[1:]
                         continue
-                    
+                        
                     try:
-                        obj = json.loads(decoded_line)
+                        # Attempt to parse one JSON object
+                        obj, idx = decoder.raw_decode(buffer)
+                        buffer = buffer[idx:]
+                        
+                        # Process the object (same logic as before)
                         if 'error' in obj:
                              yield f" [Gemini Error: {obj['error'].get('message', 'Unknown')}] "
                              continue
@@ -159,7 +170,8 @@ async def stream_gemini_api(history: list, user_message: str):
                         candidates = obj.get('candidates', [])
                         if not candidates:
                             if obj.get('promptFeedback'):
-                                yield " [Safety Block] "
+                                # yield " [Safety Block] " # Optional: uncomment if needed
+                                pass
                             continue
                             
                         content = candidates[0].get('content')
@@ -167,12 +179,13 @@ async def stream_gemini_api(history: list, user_message: str):
                              text_chunk = content['parts'][0].get('text', '')
                              if text_chunk:
                                  yield text_chunk
-                             else:
-                                 # Debug empty content parts
-                                 pass 
+                                 
+                    except json.JSONDecodeError:
+                        # Incomplete JSON object, wait for more data
+                        break
                     except Exception as e:
-                        yield f" [Parse Error: {e} Line: {decoded_line[:20]}...] " 
-                        pass
+                        yield f" [Logic Error: {e}] "
+                        break
 
 # --- Endpoints ---
 @app.get("/")
