@@ -100,19 +100,17 @@ def upload_file_to_storage(file: UploadFile, chat_id: str):
         print(f"Storage Upload Failed: {e}")
         raise ValueError(f"File Upload Failed: {e}")
 
-from fastapi.responses import StreamingResponse
+import aiohttp
 import json
-
-# ... (Previous imports match, just explicitly ensuring StreamingResponse is available)
+# ... (Previous imports match)
 
 # --- Helpers ---
-# ... (get_user_from_token, get_signed_url, fetch_context, upload_file_to_storage remain matching original)
+# ... (get_user_from_token, get_signed_url, fetch_context, upload_file_to_storage remain matching)
 
-def stream_gemini_api(history: list, user_message: str):
-    """Calls Gemini API via REST with streaming."""
+async def stream_gemini_api(history: list, user_message: str):
+    """Calls Gemini API via REST with streaming (Async)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key={GEMINI_API_KEY}"
     
-    # Format contents
     contents = []
     for msg in history:
         role = 'user' if msg['sender'] == 'user' else 'model'
@@ -122,7 +120,6 @@ def stream_gemini_api(history: list, user_message: str):
         if parts:
             contents.append({'role': role, 'parts': parts})
     
-    # Add current message
     parts = []
     if user_message:
         parts.append({'text': user_message})
@@ -134,38 +131,32 @@ def stream_gemini_api(history: list, user_message: str):
     payload = {"contents": contents}
     headers = {'Content-Type': 'application/json'}
     
-    # Stream=True is critical here
-    with requests.post(url, headers=headers, json=payload, stream=True, timeout=60) as response:
-        if response.status_code != 200:
-             yield f"Error: {response.status_code} - {response.text}"
-             return
-
-        # Gemini returns a stream of JSON objects, usually strictly formatted
-        # But requests.iter_lines maps to these chunks
-        for line in response.iter_lines():
-            if line:
-                decoded_line = line.decode('utf-8')
-                # Remove "data: " prefix if present (SSE style), though Gemini REST is usually just JSON array elements
-                # But raw REST streamGenerateContent actually sends a JSON array piece by piece.
-                # Actually, standard parsing of a JSON stream can be tricky.
-                # Let's try simple text accumulation or line processing. 
-                # Gemini often sends:  [{ "candidates": ... }] \n , \n [{...}]
-                
-                # Careful: The raw response might be valid JSON array overall, but chunks might be partial.
-                # However, usually iterating by line works if they send newlines.
-                
-                # A safer parsing approach for Gemini REST stream:
-                # It usually sends complete JSON objects starting with "{"
-                if decoded_line.startswith(',') or decoded_line.strip() == '[' or decoded_line.strip() == ']':
-                    continue
-                
-                try:
-                    obj = json.loads(decoded_line)
-                    text_chunk = obj['candidates'][0]['content']['parts'][0]['text']
-                    yield text_chunk
-                except Exception:
-                    # If we can't parse a line, it might be structural chars like '[' or ']' or ','
-                    pass
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload, timeout=60) as response:
+            if response.status != 200:
+                text = await response.text()
+                yield f"Error: {response.status} - {text}"
+                return
+            
+            # Gemini sends a JSON array stream.
+            # aiohttp reads chunks.
+            # We need to buffer lines or parse chunks properly.
+            # Actually, `response.content` is a stream.
+            async for line in response.content:
+                if line:
+                    decoded_line = line.decode('utf-8').strip()
+                    if not decoded_line: continue
+                    
+                    # Similar parsing logic
+                    if decoded_line.startswith(',') or decoded_line == '[' or decoded_line == ']':
+                        continue
+                    
+                    try:
+                        obj = json.loads(decoded_line)
+                        text_chunk = obj['candidates'][0]['content']['parts'][0]['text']
+                        yield text_chunk
+                    except Exception:
+                        pass
 
 # --- Endpoints ---
 @app.get("/")
@@ -210,12 +201,8 @@ async def chat_endpoint(
         # 4. Generator for Streaming & Saving AI Reply
         async def response_generator():
             full_reply = ""
-            # Note: stream_gemini_api is synchronous generator, we iterate it
-            # But in async def, we should run it carefully? 
-            # Actually, requests is blocking. For this simple case, direct iteration blocks the loop lightly but it's okay for low load.
-            # Better: run in threadpool? Or just keep it simple as user requested deployment fix.
-            
-            for chunk in stream_gemini_api(history, user_content):
+            # Iterate aiohttp generator asynchronously
+            async for chunk in stream_gemini_api(history, user_content):
                 full_reply += chunk
                 yield chunk
             
