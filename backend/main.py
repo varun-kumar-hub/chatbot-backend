@@ -140,6 +140,8 @@ async def stream_gemini_api(history: list, user_message: str):
                 yield f"Error: {response.status} - {text}"
                 return
             
+            # yield "[Debug: Stream connected] " 
+            
             async for line in response.content:
                 if line:
                     decoded_line = line.decode('utf-8').strip()
@@ -156,7 +158,6 @@ async def stream_gemini_api(history: list, user_message: str):
                              
                         candidates = obj.get('candidates', [])
                         if not candidates:
-                            # Handle safety blocks or empty candidates
                             if obj.get('promptFeedback'):
                                 yield " [Safety Block] "
                             continue
@@ -166,9 +167,11 @@ async def stream_gemini_api(history: list, user_message: str):
                              text_chunk = content['parts'][0].get('text', '')
                              if text_chunk:
                                  yield text_chunk
+                             else:
+                                 # Debug empty content parts
+                                 pass 
                     except Exception as e:
-                        # For debugging purposes, yield the error briefly or log it
-                        # yield f" [Parse Error: {e}] " 
+                        yield f" [Parse Error: {e} Line: {decoded_line[:20]}...] " 
                         pass
 
 # --- Endpoints ---
