@@ -149,9 +149,25 @@ async def stream_gemini_api(history: list, user_message: str):
                     
                     try:
                         obj = json.loads(decoded_line)
-                        text_chunk = obj['candidates'][0]['content']['parts'][0]['text']
-                        yield text_chunk
-                    except Exception:
+                        if 'error' in obj:
+                             yield f" [Gemini Error: {obj['error'].get('message', 'Unknown')}] "
+                             continue
+                             
+                        candidates = obj.get('candidates', [])
+                        if not candidates:
+                            # Handle safety blocks or empty candidates
+                            if obj.get('promptFeedback'):
+                                yield " [Safety Block] "
+                            continue
+                            
+                        content = candidates[0].get('content')
+                        if content and 'parts' in content:
+                             text_chunk = content['parts'][0].get('text', '')
+                             if text_chunk:
+                                 yield text_chunk
+                    except Exception as e:
+                        # For debugging purposes, yield the error briefly or log it
+                        # yield f" [Parse Error: {e}] " 
                         pass
 
 # --- Endpoints ---
