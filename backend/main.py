@@ -40,7 +40,72 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ... (Helpers match)
+# --- Models ---
+class ChatResponse(BaseModel):
+    reply: str
+    file_url: Optional[str] = None
+    
+# --- Helpers ---
+def get_user_from_token(token: str):
+    """
+    Validates the Supabase JWT and returns the User ID.
+    Even though we use Service Key for DB, we must verify user identity for security.
+    """
+    try:
+        user = supabase.auth.get_user(token)
+        if not user or not user.user:
+           raise HTTPException(status_code=401, detail="Invalid token (User not found)")
+        return user.user.id
+    except Exception as e:
+        print(f"Auth Verification Failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Auth Failed: {str(e)}")
+
+def get_signed_url(file_path: str):
+    """Generates a signed URL for a private file (valid for 1 hour)."""
+    try:
+        # 3600 seconds = 1 hour
+        return supabase.storage.from_("chat-files").create_signed_url(file_path, 3600)['signedURL']
+    except Exception as e:
+        print(f"Error generating signed URL: {e}")
+        return None
+
+def fetch_context(chat_id: str, limit: int = 15):
+    """Fetches context using Service Key (Admin) client."""
+    response = supabase.table('messages')\
+        .select('*')\
+        .eq('chat_id', chat_id)\
+        .order('created_at', desc=True)\
+        .limit(limit)\
+        .execute()
+    
+    data = response.data[::-1] if response.data else []
+    
+    # Enrich messages with signed URLs if they have files
+    for msg in data:
+        if msg.get('file_path'):
+            msg['file_url'] = get_signed_url(msg['file_path'])
+            
+    return data
+
+def upload_file_to_storage(file: UploadFile, chat_id: str):
+    """Uploads file to Supabase Storage."""
+    try:
+        file_content = file.file.read()
+        # Sanitize filename or just use it (assuming backend validation isn't strict requirement for this demo)
+        file_path = f"{chat_id}/{file.filename}"
+        
+        # Upload using Service Key (Admin)
+        supabase.storage.from_("chat-files").upload(
+            file_path,
+            file_content,
+            {"content-type": file.content_type, "upsert": "true"} 
+        )
+        return file_path
+    except Exception as e:
+        print(f"Storage Upload Failed: {e}")
+        raise ValueError(f"File Upload Failed: {e}")
+
+from fastapi.responses import StreamingResponse
 
 # --- Endpoints ---
 @app.get("/")
