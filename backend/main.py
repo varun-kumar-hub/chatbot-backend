@@ -1,5 +1,6 @@
 import os
 import json
+import aiohttp
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
@@ -106,6 +107,52 @@ def upload_file_to_storage(file: UploadFile, chat_id: str):
         raise ValueError(f"File Upload Failed: {e}")
 
 from fastapi.responses import StreamingResponse
+
+async def stream_gemini_api(history: list, user_message: str):
+    """Calls Gemini API via REST with streaming (Async)."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key={GEMINI_API_KEY}"
+    
+    contents = []
+    for msg in history:
+        role = 'user' if msg['sender'] == 'user' else 'model'
+        parts = []
+        if msg.get('content'):
+            parts.append({'text': msg['content']})
+        if parts:
+            contents.append({'role': role, 'parts': parts})
+    
+    parts = []
+    if user_message:
+        parts.append({'text': user_message})
+    if not parts:
+         parts.append({'text': "[User uploaded a file]"})
+
+    contents.append({'role': 'user', 'parts': parts})
+    
+    payload = {"contents": contents}
+    headers = {'Content-Type': 'application/json'}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload, timeout=60) as response:
+            if response.status != 200:
+                text = await response.text()
+                yield f"Error: {response.status} - {text}"
+                return
+            
+            async for line in response.content:
+                if line:
+                    decoded_line = line.decode('utf-8').strip()
+                    if not decoded_line: continue
+                    
+                    if decoded_line.startswith(',') or decoded_line == '[' or decoded_line == ']':
+                        continue
+                    
+                    try:
+                        obj = json.loads(decoded_line)
+                        text_chunk = obj['candidates'][0]['content']['parts'][0]['text']
+                        yield text_chunk
+                    except Exception:
+                        pass
 
 # --- Endpoints ---
 @app.get("/")
