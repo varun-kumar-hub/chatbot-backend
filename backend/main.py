@@ -47,6 +47,24 @@ class ChatResponse(BaseModel):
     file_url: Optional[str] = None
     
 # --- Helpers ---
+# --- Helpers ---
+import io
+import requests
+from pypdf import PdfReader
+
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+
+def extract_text_from_pdf(file_content: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text
+    except Exception as e:
+        print(f"PDF Error: {e}")
+        return "[Error extracting text from PDF]"
+
 def get_user_from_token(token: str):
     """
     Validates the Supabase JWT and returns the User ID.
@@ -88,10 +106,9 @@ def fetch_context(chat_id: str, limit: int = 15):
             
     return data
 
-def upload_file_to_storage(file: UploadFile, chat_id: str):
+def upload_file_to_storage(file: UploadFile, chat_id: str, file_content: bytes):
     """Uploads file to Supabase Storage."""
     try:
-        file_content = file.file.read()
         # Sanitize filename or just use it (assuming backend validation isn't strict requirement for this demo)
         file_path = f"{chat_id}/{file.filename}"
         
@@ -108,12 +125,27 @@ def upload_file_to_storage(file: UploadFile, chat_id: str):
 
 from fastapi.responses import StreamingResponse
 
+# System Prompt to teach AI about tools
+SYSTEM_INSTRUCTION = """
+You are an advanced AI assistant.
+1. IMAGE GENERATION: If the user asks you to generate, create, or show an image/picture/photo, you MUST output a special tag: ((GENERATE_IMAGE: <detailed_search_query>)). 
+   Example: User: "Show me a cybercity" -> You: "Here is a cybercity: ((GENERATE_IMAGE: futuristic cyberpunk city neon lights))"
+   Do not try to provide a URL yourself. Use the tag.
+2. FILE CONTEXT: You may receive file contents in the prompt. Use this to answer questions about the file.
+"""
+
 async def stream_gemini_api(history: list, user_message: str):
     """Calls Gemini API via REST with streaming (Async)."""
     # Fix: User explicitly requested Gemini 2.5 Flash. Using the available preview version.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:streamGenerateContent?key={GEMINI_API_KEY}"
     
     contents = []
+    
+    # Add System Instruction as the first message? 
+    # Gemini API supports 'system_instruction' field, but strict format 'user/model'. 
+    # We will prepend it to the first user message or handle it as context.
+    # For simplicitly, let's prepend to the latest user message or context.
+    
     for msg in history:
         role = 'user' if msg['sender'] == 'user' else 'model'
         parts = []
@@ -123,10 +155,13 @@ async def stream_gemini_api(history: list, user_message: str):
             contents.append({'role': role, 'parts': parts})
     
     parts = []
-    if user_message:
-        parts.append({'text': user_message})
-    if not parts:
-         parts.append({'text': "[User uploaded a file]"})
+    # Add System Prompt to the *current* user message for strongest effect
+    final_message = f"{SYSTEM_INSTRUCTION}\n\n{user_message}" if user_message else SYSTEM_INSTRUCTION
+    
+    if final_message:
+        parts.append({'text': final_message})
+    else:
+        parts.append({'text': "[System: User uploaded file only]"}) # Fallback
 
     contents.append({'role': 'user', 'parts': parts})
     
@@ -169,9 +204,6 @@ async def stream_gemini_api(history: list, user_message: str):
                              
                         candidates = obj.get('candidates', [])
                         if not candidates:
-                            if obj.get('promptFeedback'):
-                                # yield " [Safety Block] " # Optional: uncomment if needed
-                                pass
                             continue
                             
                         content = candidates[0].get('content')
@@ -181,7 +213,6 @@ async def stream_gemini_api(history: list, user_message: str):
                                  yield text_chunk
                                  
                     except json.JSONDecodeError:
-                        # Incomplete JSON object, wait for more data
                         break
                     except Exception as e:
                         yield f" [Logic Error: {e}] "
@@ -192,10 +223,26 @@ async def stream_gemini_api(history: list, user_message: str):
 def health_check():
     return {"status": "ok"}
 
-@app.get("/chat")
-def chat_debug():
-    """Debug endpoint to verify URL reachability."""
-    return {"status": "error", "message": "You must use POST to chat. Method Not Allowed (GET). Url is correct though."}
+@app.post("/image")
+def generate_image_proxy(query: str = Form(...)):
+    """Proxies request to Pexels API."""
+    if not PEXELS_API_KEY:
+        raise HTTPException(status_code=500, detail="Pexels API Key not configured")
+        
+    try:
+        headers = {"Authorization": PEXELS_API_KEY}
+        # Search for 1 photo
+        url = f"https://api.pexels.com/v1/search?query={query}&per_page=1"
+        res = requests.get(url, headers=headers)
+        data = res.json()
+        
+        if data.get('photos'):
+            return {"url": data['photos'][0]['src']['medium'], "photographer": data['photos'][0]['photographer']}
+        else:
+             return {"url": None, "error": "No images found"}
+    except Exception as e:
+        print(f"Pexels Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_endpoint(
@@ -217,18 +264,43 @@ async def chat_endpoint(
         user_content = message if message else ""
         file_path = None
         
-        # 1. Handle File Upload
+        # 1. Handle File Upload (Parse & Store)
         if file:
-            file_path = upload_file_to_storage(file, chat_id)
+            try:
+                # Read content once
+                file_bytes = await file.read()
+                
+                # A. Parse Text (RAG)
+                parsed_text = ""
+                if file.filename.lower().endswith('.pdf'):
+                    parsed_text = extract_text_from_pdf(file_bytes)
+                elif file.filename.lower().endswith('.txt') or file.filename.lower().endswith('.md'):
+                    parsed_text = file_bytes.decode('utf-8', errors='ignore')
+                
+                if parsed_text:
+                    user_content += f"\n\n[Attached File Content ({file.filename})]:\n{parsed_text[:20000]}" # Limit context
+                    
+                # B. Upload Storage
+                file_path = upload_file_to_storage(file, chat_id, file_bytes)
+                
+            except Exception as e:
+                print(f"File Processing Error: {e}")
+                user_content += "\n[Error parsing attached file]"
 
         # 2. Fetch Context
         history = fetch_context(chat_id)
         
         # 3. Save User Message Immediately
+        # Note: We save the ORIGINAL message, not the giant RAG text, to keep DB clean.
+        # But for the AI to 'remember' the file in history next turn, we technically need it.
+        # For V1, we will save the user_prompt only. The file content is one-time injection unless we save it.
+        # Improvement: We should probably prepend a summary? 
+        # For now, let's save the generic message.
+        
         supabase.table('messages').insert({
             'chat_id': chat_id,
             'sender': 'user',
-            'content': user_content,
+            'content': message if message else f"[Sent file: {file.filename}]", 
             'file_path': file_path
         }).execute()
 
