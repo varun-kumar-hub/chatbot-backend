@@ -53,11 +53,75 @@ import base64
 import requests
 from pypdf import PdfReader
 
-# ... (Previous imports/constants remain)
+# --- Helpers ---
+def extract_text_from_pdf(file_content: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(file_content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text
+    except Exception as e:
+        print(f"PDF Error: {e}")
+        return "[Error extracting text from PDF]"
 
-# ... (extract_text_from_pdf remains)
+def get_user_from_token(token: str):
+    """
+    Validates the Supabase JWT and returns the User ID.
+    Even though we use Service Key for DB, we must verify user identity for security.
+    """
+    try:
+        user = supabase.auth.get_user(token)
+        if not user or not user.user:
+           raise HTTPException(status_code=401, detail="Invalid token (User not found)")
+        return user.user.id
+    except Exception as e:
+        print(f"Auth Verification Failed: {e}")
+        raise HTTPException(status_code=401, detail=f"Auth Failed: {str(e)}")
 
-# ... (Supabase helpers remain)
+def get_signed_url(file_path: str):
+    """Generates a signed URL for a private file (valid for 1 hour)."""
+    try:
+        # 3600 seconds = 1 hour
+        return supabase.storage.from_("chat-files").create_signed_url(file_path, 3600)['signedURL']
+    except Exception as e:
+        print(f"Error generating signed URL: {e}")
+        return None
+
+def fetch_context(chat_id: str, limit: int = 15):
+    """Fetches context using Service Key (Admin) client."""
+    response = supabase.table('messages')\
+        .select('*')\
+        .eq('chat_id', chat_id)\
+        .order('created_at', desc=True)\
+        .limit(limit)\
+        .execute()
+    
+    data = response.data[::-1] if response.data else []
+    
+    # Enrich messages with signed URLs if they have files
+    for msg in data:
+        if msg.get('file_path'):
+            msg['file_url'] = get_signed_url(msg['file_path'])
+            
+    return data
+
+def upload_file_to_storage(file: UploadFile, chat_id: str, file_content: bytes):
+    """Uploads file to Supabase Storage."""
+    try:
+        # Sanitize filename or just use it (assuming backend validation isn't strict requirement for this demo)
+        file_path = f"{chat_id}/{file.filename}"
+        
+        # Upload using Service Key (Admin)
+        supabase.storage.from_("chat-files").upload(
+            file_path,
+            file_content,
+            {"content-type": file.content_type, "upsert": "true"} 
+        )
+        return file_path
+    except Exception as e:
+        print(f"Storage Upload Failed: {e}")
+        raise ValueError(f"File Upload Failed: {e}")
 
 async def stream_gemini_api(history: list, user_message: str, image_data: dict = None):
     """Calls Gemini API via REST with streaming (Async). Supports Text + Image."""
