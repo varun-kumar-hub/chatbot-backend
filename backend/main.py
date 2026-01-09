@@ -130,7 +130,12 @@ You are an advanced AI assistant.
 1. IMAGE GENERATION: If the user asks you to generate, create, or show an image/picture/photo, you MUST output a special tag: ((GENERATE_IMAGE: <detailed_search_query>)). 
    Example: User: "Show me a cybercity" -> You: "Here is a cybercity: ((GENERATE_IMAGE: futuristic cyberpunk city neon lights))"
    Do not try to provide a URL yourself. Use the tag.
-2. FILE CONTEXT: You may receive file contents in the prompt. Use this to answer questions about the file.
+2. DIAGRAMS & FLOWCHARTS: If the user asks for a diagram, flowchart, mind map, or structure, generate a MERMAID.JS code block.
+   Wrap it in triple backticks with 'mermaid'. Example:
+   ```mermaid
+   graph TD; A-->B;
+   ```
+3. FILE CONTEXT: You may receive file contents in the prompt. Use this to answer questions about the file.
 """
 
 async def stream_gemini_api(history: list, user_message: str, image_data: dict = None):
@@ -140,7 +145,8 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
     """
     
     # 1. Define Model Endpoints
-    MODEL_2_5 = "gemini-2.5-flash-preview-09-2025"
+    # We switch to 2.0 Flash Exp as it is more stable than the 2.5 Preview for high-frequency testing
+    MODEL_2_5 = "gemini-2.0-flash-exp" 
     MODEL_1_5 = "gemini-1.5-flash"
     
     base_url = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={key}"
