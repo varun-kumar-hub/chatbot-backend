@@ -273,6 +273,7 @@ async def chat_endpoint(
                 
                 # A. Handle Images (Pass to Vision Model)
                 if file_mime.startswith('image/'):
+                    print(f"DEBUG: Processing Image {file.filename} ({file_mime})")
                     # Encode base64 for Gemini
                     b64_data = base64.b64encode(file_bytes).decode('utf-8')
                     image_payload = {
@@ -283,14 +284,21 @@ async def chat_endpoint(
                     
                 # B. Handle Documents (RAG / Text Extraction)
                 else:
+                    print(f"DEBUG: Processing Document {file.filename} ({file_mime})")
                     parsed_text = ""
                     if file.filename.lower().endswith('.pdf'):
                         parsed_text = extract_text_from_pdf(file_bytes)
+                        print(f"DEBUG: Extracted PDF text length: {len(parsed_text)}")
                     elif file.filename.lower().endswith(('.txt', '.md', '.csv', '.json', '.py', '.js', '.html', '.css')):
                         parsed_text = file_bytes.decode('utf-8', errors='ignore')
+                        print(f"DEBUG: Extracted Text file length: {len(parsed_text)}")
                     
                     if parsed_text:
+                        print("DEBUG: Appending text to prompt...")
                         user_content += f"\n\n[Attached File Content ({file.filename})]:\n{parsed_text[:30000]}" # Limit context
+                    else:
+                        print("DEBUG: No text extracted from file.")
+                        user_content += f"\n\n[System: The user attached a file '{file.filename}' but no text could be extracted. It might be an image-only PDF or empty.]"
                     
                 # C. Upload to Storage (All files)
                 file_path = upload_file_to_storage(file, chat_id, file_bytes)
