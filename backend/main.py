@@ -206,7 +206,32 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
                         yield f" [Logic Error: {e}] "
                         break
 
-# ... (Health check / Image Proxy remain)
+# --- Endpoints ---
+@app.get("/")
+def health_check():
+    return {"status": "ok"}
+
+@app.post("/image")
+def generate_image_proxy(query: str = Form(...)):
+    """Proxies request to Pexels API."""
+    PEXELS_API_KEY = os.getenv("PEXELS_API_KEY") # Fetch inside function to be safe
+    if not PEXELS_API_KEY:
+        raise HTTPException(status_code=500, detail="Pexels API Key not configured")
+        
+    try:
+        headers = {"Authorization": PEXELS_API_KEY}
+        # Search for 1 photo
+        url = f"https://api.pexels.com/v1/search?query={query}&per_page=1"
+        res = requests.get(url, headers=headers)
+        data = res.json()
+        
+        if data.get('photos'):
+            return {"url": data['photos'][0]['src']['medium'], "photographer": data['photos'][0]['photographer']}
+        else:
+             return {"url": None, "error": "No images found"}
+    except Exception as e:
+        print(f"Pexels Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
 async def chat_endpoint(
