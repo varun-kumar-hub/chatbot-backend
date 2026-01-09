@@ -145,8 +145,7 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
     """
     
     # 1. Define Model Endpoints
-    # We switch to 2.0 Flash Exp as it is more stable than the 2.5 Preview for high-frequency testing
-    MODEL_2_5 = "gemini-2.0-flash-exp" 
+    MODEL_2_5 = "gemini-2.5-flash-preview-09-2025"
     MODEL_1_5 = "gemini-1.5-flash"
     
     base_url = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={key}"
@@ -197,13 +196,13 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
                     if response.status == 429:
                         if attempt < max_retries - 1:
                             wait_time = 2 * (attempt + 1)
-                            print(f"WARN: Gemini 2.0 Rate Limited. Retrying in {wait_time}s...")
-                            yield f"[System: High traffic on Gemini 2.0. Retrying... ({attempt+1}/{max_retries})]\n\n"
+                            print(f"WARN: Gemini 2.5 Rate Limited. Retrying in {wait_time}s...")
+                            yield f"[System: High traffic on Gemini 2.5. Retrying... ({attempt+1}/{max_retries})]\n\n"
                             import asyncio
                             await asyncio.sleep(wait_time)
                             continue
                         else:
-                            yield "Error: Gemini 2.0 Flash Exp is currently overloaded (Rate Limit Exceeded). Please try again in 5 minutes or switch to Standard/Fast mode."
+                            yield "Error: Gemini 2.5 is currently overloaded (Rate Limit Exceeded). Please try again in a minute."
                             return
                             
                     elif response.status != 200:
