@@ -197,12 +197,12 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
                         if attempt < max_retries - 1:
                             wait_time = 2 * (attempt + 1)
                             print(f"WARN: Gemini 2.5 Rate Limited. Retrying in {wait_time}s...")
-                            yield f"[System: High traffic on Gemini 2.5. Retrying... ({attempt+1}/{max_retries})]\n\n"
+                            yield f"[System: Model busy. Retrying... ({attempt+1}/{max_retries})]\n\n"
                             import asyncio
                             await asyncio.sleep(wait_time)
                             continue
                         else:
-                            yield "Error: Gemini 2.5 is currently overloaded (Rate Limit Exceeded). Please try again in a minute."
+                            yield "Model is currently busy. Please retry in a few seconds."
                             return
                             
                     elif response.status != 200:
