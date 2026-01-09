@@ -134,87 +134,116 @@ You are an advanced AI assistant.
 """
 
 async def stream_gemini_api(history: list, user_message: str, image_data: dict = None):
-    """Calls Gemini API via REST with streaming (Async). Supports Text + Image."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:streamGenerateContent?key={GEMINI_API_KEY}"
+    """
+    Calls Gemini API with fallback logic.
+    Attempts Gemini 2.5 Flash -> Falls back to Gemini 1.5 Flash on 429.
+    """
     
-    contents = []
+    # 1. Define Model Endpoints
+    MODEL_2_5 = "gemini-2.5-flash-preview-09-2025"
+    MODEL_1_5 = "gemini-1.5-flash"
     
-    # History (Text Only for now to save tokens/complexity)
-    for msg in history:
-        role = 'user' if msg['sender'] == 'user' else 'model'
+    base_url = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={key}"
+    
+    # 2. Helper to construct payload (shared)
+    def make_payload(hist, u_msg, img):
+        contents = []
+        # History
+        for msg in hist:
+            role = 'user' if msg['sender'] == 'user' else 'model'
+            parts = []
+            if msg.get('content'):
+                parts.append({'text': msg['content']})
+            if parts:
+                contents.append({'role': role, 'parts': parts})
+        
+        # Current Message
         parts = []
-        if msg.get('content'):
-            parts.append({'text': msg['content']})
-        if parts:
-            contents.append({'role': role, 'parts': parts})
-    
-    # Current User Message
-    parts = []
-    
-    # System Prompt
-    final_message = f"{SYSTEM_INSTRUCTION}\n\n{user_message}" if user_message else SYSTEM_INSTRUCTION
-    if final_message:
-        parts.append({'text': final_message})
-    
-    # Attach Image if present
-    if image_data:
-        parts.append({
-            "inline_data": {
-                "mime_type": image_data['mime_type'],
-                "data": image_data['data']
-            }
-        })
-    elif not final_message:
-         parts.append({'text': "[System: User uploaded file only]"})
+        final_message = f"{SYSTEM_INSTRUCTION}\n\n{u_msg}" if u_msg else SYSTEM_INSTRUCTION
+        if final_message:
+             parts.append({'text': final_message})
+        
+        if img:
+             parts.append({
+                "inline_data": {
+                    "mime_type": img['mime_type'],
+                    "data": img['data']
+                }
+            })
+        elif not final_message:
+             parts.append({'text': "[System: User uploaded file only]"})
 
-    contents.append({'role': 'user', 'parts': parts})
-    
-    payload = {"contents": contents}
+        contents.append({'role': 'user', 'parts': parts})
+        return {"contents": contents}
+
+    payload = make_payload(history, user_message, image_data)
     headers = {'Content-Type': 'application/json'}
-    
+
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload, timeout=60) as response:
-            if response.status != 200:
-                text = await response.text()
-                yield f"Error: {response.status} - {text}"
-                return
-            
-            buffer = ""
-            decoder = json.JSONDecoder()
-            
-            async for chunk in response.content.iter_any():
-                if not chunk: continue
-                buffer += chunk.decode('utf-8', errors='replace')
-                
-                while True:
-                    buffer = buffer.lstrip()
-                    if not buffer: break
-                    
-                    if buffer.startswith(('[', ',', ']')):
-                        buffer = buffer[1:]
-                        continue
-                        
-                    try:
-                        obj, idx = decoder.raw_decode(buffer)
-                        buffer = buffer[idx:]
-                        
-                        if 'error' in obj:
-                             yield f" [Gemini Error: {obj['error'].get('message', 'Unknown')}] "
-                             continue
-                             
-                        candidates = obj.get('candidates', [])
-                        if not candidates: continue
+        url = base_url.format(model=MODEL_2_5, key=GEMINI_API_KEY)
+        
+        # Retry Strategy: 3 attempts with exponential backoff
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with session.post(url, headers=headers, json=payload, timeout=60) as response:
+                    # 429 = Rate Limit
+                    if response.status == 429:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 * (attempt + 1)
+                            print(f"WARN: Gemini 2.5 Rate Limited. Retrying in {wait_time}s...")
+                            yield f"[System: High traffic on Gemini 2.5. Retrying... ({attempt+1}/{max_retries})]\n\n"
+                            import asyncio
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            yield "Error: Gemini 2.5 is currently overloaded (Rate Limit Exceeded). Please try again in a minute."
+                            return
                             
-                        content = candidates[0].get('content')
-                        if content and 'parts' in content:
-                             text_chunk = content['parts'][0].get('text', '')
-                             if text_chunk: yield text_chunk
-                                 
-                    except json.JSONDecodeError:
-                        break
-                    except Exception as e:
-                        yield f" [Logic Error: {e}] "
-                        break
+                    elif response.status != 200:
+                        text = await response.text()
+                        yield f"Error: {response.status} - {text}"
+                        return
+                    else:
+                        # Success! Parse stream
+                        async for chunk in parse_gemini_stream(response):
+                            yield chunk
+                        return # Done
+                        
+            except Exception as e:
+                print(f"Network Error: {e}")
+                if attempt < max_retries - 1:
+                     await asyncio.sleep(2)
+                     continue
+                yield f"Error: Connection Failed - {str(e)}"
+                return
+
+async def parse_gemini_stream(response):
+    """Helper to parse the raw byte stream from Gemini"""
+    buffer = ""
+    decoder = json.JSONDecoder()
+    async for chunk in response.content.iter_any():
+        if not chunk: continue
+        buffer += chunk.decode('utf-8', errors='replace')
+        while True:
+            buffer = buffer.lstrip()
+            if not buffer: break
+            if buffer.startswith(('[', ',', ']')):
+                buffer = buffer[1:]
+                continue
+            try:
+                obj, idx = decoder.raw_decode(buffer)
+                buffer = buffer[idx:]
+                candidates = obj.get('candidates', [])
+                if candidates:
+                    content = candidates[0].get('content')
+                    if content and 'parts' in content:
+                        text_chunk = content['parts'][0].get('text', '')
+                        if text_chunk: yield text_chunk
+            except json.JSONDecodeError:
+                break
+            except Exception:
+                break
 
 # --- Endpoints ---
 @app.get("/")
