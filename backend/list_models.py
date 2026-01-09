@@ -18,7 +18,7 @@ if response.status_code == 200:
     print("Available Models:")
     for m in models:
         name = m['name']
-        if '1.5-flash' in name and 'generateContent' in m.get('supportedGenerationMethods', []):
+        if 'generateContent' in m.get('supportedGenerationMethods', []):
             print(f"- {name}")
 else:
     print(f"Error listing models: {response.status_code} - {response.text}")

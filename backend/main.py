@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '.env'), override=True)
 
-# --- Configuration ---
+# --- Configuration --- 
 SUPABASE_URL = os.getenv("VITE_SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -123,6 +123,15 @@ def upload_file_to_storage(file: UploadFile, chat_id: str, file_content: bytes):
     except Exception as e:
         print(f"Storage Upload Failed: {e}")
         raise ValueError(f"File Upload Failed: {e}")
+
+# System Prompt to teach AI about tools
+SYSTEM_INSTRUCTION = """
+You are an advanced AI assistant.
+1. IMAGE GENERATION: If the user asks you to generate, create, or show an image/picture/photo, you MUST output a special tag: ((GENERATE_IMAGE: <detailed_search_query>)). 
+   Example: User: "Show me a cybercity" -> You: "Here is a cybercity: ((GENERATE_IMAGE: futuristic cyberpunk city neon lights))"
+   Do not try to provide a URL yourself. Use the tag.
+2. FILE CONTEXT: You may receive file contents in the prompt. Use this to answer questions about the file.
+"""
 
 async def stream_gemini_api(history: list, user_message: str, image_data: dict = None):
     """Calls Gemini API via REST with streaming (Async). Supports Text + Image."""
