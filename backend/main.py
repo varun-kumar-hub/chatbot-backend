@@ -223,24 +223,28 @@ def health_check():
 
 @app.post("/image")
 def generate_image_proxy(query: str = Form(...)):
-    """Proxies request to Pexels API."""
-    PEXELS_API_KEY = os.getenv("PEXELS_API_KEY") # Fetch inside function to be safe
-    if not PEXELS_API_KEY:
-        raise HTTPException(status_code=500, detail="Pexels API Key not configured")
-        
+    """
+    Generates an image using Pollinations.ai (No API Key required).
+    Returns a direct URL that generates the image on-the-fly.
+    """
     try:
-        headers = {"Authorization": PEXELS_API_KEY}
-        # Search for 1 photo
-        url = f"https://api.pexels.com/v1/search?query={query}&per_page=1"
-        res = requests.get(url, headers=headers)
-        data = res.json()
+        # 1. Enhance prompt for better results (optional but recommended)
+        enhanced_query = f"{query}, high quality, detailed, 8k resolution, cinematic lighting"
         
-        if data.get('photos'):
-            return {"url": data['photos'][0]['src']['medium'], "photographer": data['photos'][0]['photographer']}
-        else:
-             return {"url": None, "error": "No images found"}
+        # 2. URL Encode the query
+        import urllib.parse
+        encoded_query = urllib.parse.quote(enhanced_query)
+        
+        # 3. Construct URL
+        # We add a random seed to ensure a new image is generated if they ask again
+        import random
+        seed = random.randint(1, 10000)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_query}?seed={seed}&nologo=true"
+        
+        return {"url": image_url, "photographer": "AI Generator"}
+
     except Exception as e:
-        print(f"Pexels Error: {e}")
+        print(f"Image Gen Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat")
