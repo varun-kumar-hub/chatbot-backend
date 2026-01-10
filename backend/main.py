@@ -138,7 +138,7 @@ You are an advanced AI assistant.
 3. FILE CONTEXT: You may receive file contents in the prompt. Use this to answer questions about the file.
 """
 
-async def stream_gemini_api(history: list, user_message: str, image_data: dict = None):
+async def stream_gemini_api(history: list, user_message: str, image_data: dict = None, persona_prompt: str = None):
     """
     Calls Gemini API with fallback logic.
     Attempts Gemini 2.5 Flash -> Falls back to Gemini 1.5 Flash on 429.
@@ -151,7 +151,7 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
     base_url = "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={key}"
     
     # 2. Helper to construct payload (shared)
-    def make_payload(hist, u_msg, img):
+    def make_payload(hist, u_msg, img, p_prompt):
         contents = []
         # History
         for msg in hist:
@@ -164,7 +164,13 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
         
         # Current Message
         parts = []
-        final_message = f"{SYSTEM_INSTRUCTION}\n\n{u_msg}" if u_msg else SYSTEM_INSTRUCTION
+        
+        # Combine Static Instruction + Dynamic Persona Prompt
+        combined_instruction = SYSTEM_INSTRUCTION
+        if p_prompt:
+            combined_instruction += f"\n\n[Persona Instruction]: {p_prompt}"
+
+        final_message = f"{combined_instruction}\n\n{u_msg}" if u_msg else combined_instruction
         if final_message:
              parts.append({'text': final_message})
         
@@ -181,7 +187,7 @@ async def stream_gemini_api(history: list, user_message: str, image_data: dict =
         contents.append({'role': 'user', 'parts': parts})
         return {"contents": contents}
 
-    payload = make_payload(history, user_message, image_data)
+    payload = make_payload(history, user_message, image_data, persona_prompt)
     headers = {'Content-Type': 'application/json'}
 
     async with aiohttp.ClientSession() as session:
@@ -285,6 +291,7 @@ def generate_image_proxy(query: str = Form(...)):
 async def chat_endpoint(
     chat_id: str = Form(...),
     message: str = Form(None), # Optional
+    persona_prompt: str = Form(None), # Optional - dynamic system instruction
     file: UploadFile = File(None),
     authorization: str = Header(None)
 ):
@@ -359,8 +366,8 @@ async def chat_endpoint(
         # 4. Generator for Streaming & Saving AI Reply
         async def response_generator():
             full_reply = ""
-            # Pass image_payload to the streamer
-            async for chunk in stream_gemini_api(history, user_content, image_payload):
+            # Pass image_payload and persona_prompt to the streamer
+            async for chunk in stream_gemini_api(history, user_content, image_payload, persona_prompt):
                 full_reply += chunk
                 yield chunk
             
